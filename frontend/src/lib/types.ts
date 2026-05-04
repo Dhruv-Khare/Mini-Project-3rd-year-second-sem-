@@ -114,3 +114,23 @@ export interface CartItem {
   details: string; // e.g. "Mumbai, 3-star" or "DEL → BOM, 2h 30m"
   originalData: Hotel | Flight;
 }
+
+// ── Smart Bundle Types ──
+export interface BundleScores {
+  airportProximity: number;
+  starRating: number;
+  priceValue: number;
+  amenityMatch: number;
+  timeAlignment: number;
+  semanticBoost: number;
+}
+
+export interface SmartBundle {
+  hotel: Hotel;
+  flight: Flight;
+  scores: BundleScores;
+  totalScore: number;
+  combinedPrice: number;
+  savings: number;
+  tags: string[];
+}

@@ -22,7 +22,14 @@ BEHAVIOR RULES:
 9. If the destination is ambiguous, make a reasonable assumption and proceed.
 10. IMPORTANT: Always call at least one search tool before giving your final answer. Do NOT fabricate hotel/flight data.
 11. When multiple tool calls are needed, call them all at once for efficiency.
-12. IMPORTANT: If the user searches for a REGION (like 'Kashmir', 'Goa', 'Kerala', 'Himachal'), you MUST convert it to the specific AIRPORT CITY (e.g. Kashmir -> Srinagar, Goa -> Dabolim/Mopa, Kerala -> Kochi, Himachal -> Shimla/Dharamshala) in your tool calls. Do not pass the region name directly.`;
+12. IMPORTANT: If the user searches for a REGION (like 'Kashmir', 'Goa', 'Kerala', 'Himachal'), you MUST convert it to the specific AIRPORT CITY (e.g. Kashmir -> Srinagar, Goa -> Dabolim/Mopa, Kerala -> Kochi, Himachal -> Shimla/Dharamshala) in your tool calls. Do not pass the region name directly.
+
+IATA CODE RULES (CRITICAL):
+- You MUST ALWAYS provide the correct 3-letter IATA airport code in 'origin_iata' and 'destination_iata' fields.
+- Fix any user spelling mistakes before looking up the code. "banglore" / "bangaluru" = BLR, "dilli" = DEL, "bombay" / "mumbay" = BOM, etc.
+- Common Indian IATA codes: DEL (Delhi), BOM (Mumbai), BLR (Bangalore), HYD (Hyderabad), MAA (Chennai), CCU (Kolkata), GOI (Goa), JAI (Jaipur), SXR (Srinagar), COK (Kochi), AMD (Ahmedabad), PNQ (Pune), LKO (Lucknow), GAU (Guwahati), VNS (Varanasi), IXC (Chandigarh), ATQ (Amritsar), TRV (Trivandrum), UDR (Udaipur), IXL (Leh), DED (Dehradun).
+- Common International: DXB (Dubai), SIN (Singapore), BKK (Bangkok), KUL (Kuala Lumpur), LON/LHR (London), PAR/CDG (Paris), NYC/JFK (New York), SYD (Sydney), IST (Istanbul), MLE (Maldives).
+- NEVER leave origin_iata or destination_iata empty when you know the city.`;
 
 export const functionDeclarations = [
   {
@@ -31,9 +38,10 @@ export const functionDeclarations = [
     parameters: {
       type: "OBJECT",
       properties: {
-        origin: { type: "STRING", description: "Departure city (e.g. Delhi). If user provides a region, convert to main airport city." },
-        destination: { type: "STRING", description: "Destination city (e.g. Bangalore). If user provides a region like 'Kashmir', use 'Srinagar'." },
-        destination_iata: { type: "STRING", description: "3-letter IATA code for the destination airport (e.g. SXR for Srinagar, GOI for Goa). REQUIRED if known." },
+        origin: { type: "STRING", description: "Departure city name (e.g. Delhi). If user provides a region, convert to main airport city." },
+        origin_iata: { type: "STRING", description: "3-letter IATA code for the origin airport (e.g. DEL for Delhi, BOM for Mumbai). ALWAYS provide this." },
+        destination: { type: "STRING", description: "Destination city name (e.g. Bangalore). Fix any spelling mistakes. If user provides a region like 'Kashmir', use 'Srinagar'." },
+        destination_iata: { type: "STRING", description: "3-letter IATA code for the destination airport (e.g. BLR for Bangalore, SXR for Srinagar). ALWAYS provide this." },
         start_date: { type: "STRING", description: "Trip start date (YYYY-MM-DD)" },
         end_date: { type: "STRING", description: "Trip end date (YYYY-MM-DD)" },
         adults: { type: "INTEGER", description: "Number of travelers" },
@@ -101,11 +109,15 @@ export const functionDeclarations = [
           type: "STRING",
           description: "Departure city name. Convert regions to airports (e.g. Kerala -> Kochi).",
         },
+        origin_iata: {
+          type: "STRING",
+          description: "3-letter IATA code for origin airport (e.g. DEL). ALWAYS provide this.",
+        },
         destination: {
           type: "STRING",
-          description: "Arrival city name. Convert regions to airports (e.g. Kashmir -> Srinagar).",
+          description: "Arrival city name. Fix spelling mistakes. Convert regions to airports (e.g. Kashmir -> Srinagar).",
         },
-        destination_iata: { type: "STRING", description: "3-letter IATA code (e.g. SXR). REQUIRED if known." },
+        destination_iata: { type: "STRING", description: "3-letter IATA code for destination (e.g. BLR, SXR). ALWAYS provide this." },
         departure_date: {
           type: "STRING",
           description: "Departure date YYYY-MM-DD",

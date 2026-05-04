@@ -7,8 +7,8 @@ import { MapView } from "@/components/features/MapView";
 import { ChatAssistant } from "@/components/features/ChatAssistant";
 import { SafarBot } from "@/components/features/SafarBot";
 import { ResultsPanel } from "@/components/layout/ResultsPanel";
-import { searchTravel, searchHotels, searchFlights } from "@/lib/api";
-import { TripPlan, CartItem } from "@/lib/types";
+import { searchTravel, searchHotels, searchFlights, generateSmartBundles } from "@/lib/api";
+import { TripPlan, CartItem, SmartBundle } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { HeroLanding } from "@/components/layout/HeroLanding";
@@ -24,6 +24,10 @@ export default function Home() {
 
   // ── Cart State ──
   const [cart, setCart] = useState<CartItem[]>([]);
+
+  // ── Smart Bundles State ──
+  const [bundles, setBundles] = useState<SmartBundle[]>([]);
+  const [bundlesLoading, setBundlesLoading] = useState(false);
 
   const handleAddToCart = useCallback((item: CartItem) => {
     setCart(prev => {
@@ -129,6 +133,22 @@ export default function Home() {
                       fetch_flights_async: false // Mark done
                   };
                   originalTripPlan.current = updated;
+
+                  // Auto-generate smart bundles when both flights & hotels are available
+                  if (flights.length > 0 && (updated.hotels?.length || 0) > 0) {
+                    const destCode = flights[0]?.destination || updated.destination || "";
+                    setBundlesLoading(true);
+                    generateSmartBundles({
+                      hotels: updated.hotels || [],
+                      flights: flights,
+                      chatHistory: [],
+                      destinationCode: destCode,
+                    })
+                      .then(res => setBundles(res.bundles || []))
+                      .catch(err => console.error("Bundle generation failed:", err))
+                      .finally(() => setBundlesLoading(false));
+                  }
+
                   return updated;
               });
           } catch (err) {
@@ -335,6 +355,8 @@ export default function Home() {
                     onUpdateCartQty={handleUpdateCartQty}
                     onClearCart={handleClearCart}
                     onActiveTabChange={setActiveTab}
+                    bundles={bundles}
+                    bundlesLoading={bundlesLoading}
                 />
             </div>
         )}

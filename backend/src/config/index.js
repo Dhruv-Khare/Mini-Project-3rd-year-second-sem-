@@ -29,6 +29,11 @@ const config = {
     password: process.env.TBO_AIR_PASSWORD || "",
   },
 
+  // ─── Pinecone Vector DB ────────────────
+  pinecone: {
+    apiKey: process.env.PINECONE_API_KEY || "",
+  },
+
   // ─── Defaults ──────────────────────────
   defaults: {
     origin: process.env.DEFAULT_ORIGIN || "DEL",
