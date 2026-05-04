@@ -16,13 +16,12 @@ function authHeader() {
   return `Basic ${cred}`;
 }
 
-async function tboPost(endpoint, body) {
+async function tboPost(endpoint, body, timeoutMs = 15000) {
   const url = `${TBO_BASE}/${endpoint}`;
   const bodyStr = JSON.stringify(body);
   const start = Date.now();
   const controller = new AbortController();
-  // 45s timeout for slow TBO staging API
-  const timeout = setTimeout(() => controller.abort(), 45000); 
+  const timeout = setTimeout(() => controller.abort(), timeoutMs); 
   
   try {
     const res = await fetch(url, {
@@ -125,7 +124,7 @@ const CACHE_TTL = 1000 * 60 * 60;  // 1 hour
 
 /**
  * Get hotel codes for a specific city from TBO (cached).
- * Tries detailed list first (for images), falls back to simple list (names/locations).
+ * Uses simple list fetch (fast) with a 10s timeout.
  */
 async function getCityHotelCodes(cityCode) {
   if (!cityCode) return [];
@@ -137,67 +136,13 @@ async function getCityHotelCodes(cityCode) {
   }
 
   console.log(`[TBO] Fetching hotel codes for city ${cityCode}...`);
-  
-  // Attempt 1: Detailed fetch (timeout 5s)
+
+  // Single fast fetch — simple response (10s timeout)
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000); 
+    const timeout = setTimeout(() => controller.abort(), 10000);
 
     const res = await fetch(
-      `${TBO_BASE}/TBOHotelCodeList`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: authHeader() },
-        body: JSON.stringify({ CityCode: String(cityCode), IsDetailedResponse: "true" }),
-        signal: controller.signal,
-      }
-    );
-    clearTimeout(timeout);
-    
-    if (res.ok) {
-      const data = await res.json();
-      const detailsMap = {};
-      let codes = [];
-      
-      if (data.Hotels && Array.isArray(data.Hotels)) {
-          for (const hotel of data.Hotels) {
-              if (!hotel || typeof hotel !== 'object') continue;
-              const code = String(hotel.HotelCode || hotel.hotelCode || '');
-              if (!code) continue;
-              codes.push(code);
-
-              let lat = 0, lng = 0;
-              if (hotel.Map && typeof hotel.Map === 'string' && hotel.Map.includes('|')) {
-                const [latStr, lngStr] = hotel.Map.split('|');
-                lat = parseFloat(latStr) || 0;
-                lng = parseFloat(lngStr) || 0;
-              }
-
-              detailsMap[code] = formatHotelDetails(hotel, code, lat, lng);
-          }
-      }
-      
-      codes = filterDeadCodes(codes);
-      if (codes.length > 0) {
-          cityCodesCache.set(cityCode, { codes, time: now });
-          if (Object.keys(detailsMap).length > 0) {
-              cityDetailsCache.set(cityCode, { map: detailsMap, time: now });
-              console.log(`[TBO] Cached ${codes.length} detailed codes for ${cityCode}`);
-          }
-          return codes;
-      }
-    }
-  } catch (err) {
-     // Silent fail for detailed list timeout - expected on staging
-  }
-
-  // Attempt 2: Simple fetch (timeout 20s)
-  console.log(`[TBO] Fetching SIMPLE hotel codes for city ${cityCode} (fallback)...`);
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
-
-    const res2 = await fetch(
       `${TBO_BASE}/TBOHotelCodeList`,
       {
         method: "POST",
@@ -207,14 +152,13 @@ async function getCityHotelCodes(cityCode) {
       }
     );
     clearTimeout(timeout);
-    const data2 = await res2.json();
+    const data = await res.json();
 
     let codes = [];
-    const detailsMap2 = {};
+    const detailsMap = {};
 
-    const hotelsList = data2.Hotels || (Array.isArray(data2) ? data2 : []) || [];
-    
-    // Even simple response has name/location data we can parse
+    const hotelsList = data.Hotels || (Array.isArray(data) ? data : []) || [];
+
     if (Array.isArray(hotelsList)) {
         for (const hotel of hotelsList) {
             if (!hotel || typeof hotel !== 'object') continue;
@@ -232,10 +176,10 @@ async function getCityHotelCodes(cityCode) {
                 lng = parseFloat(hotel.Longitude) || 0;
             }
 
-            detailsMap2[code] = formatHotelDetails(hotel, code, lat, lng);
+            detailsMap[code] = formatHotelDetails(hotel, code, lat, lng);
         }
-    } else if (data2.HotelCodes && Array.isArray(data2.HotelCodes)) {
-         codes = data2.HotelCodes.map(c => String(c));
+    } else if (data.HotelCodes && Array.isArray(data.HotelCodes)) {
+         codes = data.HotelCodes.map(c => String(c));
     }
 
     codes = filterDeadCodes(codes);
@@ -247,14 +191,14 @@ async function getCityHotelCodes(cityCode) {
 
     if (codes.length > 0) {
         cityCodesCache.set(cityCode, { codes, time: now });
-        if (Object.keys(detailsMap2).length > 0) {
-             cityDetailsCache.set(cityCode, { map: detailsMap2, time: now });
+        if (Object.keys(detailsMap).length > 0) {
+             cityDetailsCache.set(cityCode, { map: detailsMap, time: now });
         }
-        console.log(`[TBO] Cached ${codes.length} simple codes for ${cityCode}`);
+        console.log(`[TBO] Cached ${codes.length} codes for ${cityCode}`);
         return codes;
     }
   } catch (err) {
-    console.warn(`[TBO] HotelCodeList fallback failed: ${err.message}`);
+    console.warn(`[TBO] HotelCodeList fetch failed: ${err.message}`);
   }
 
   return [];
@@ -290,21 +234,95 @@ export function getCachedHotelDetailsMap(cityCode) {
   return {};
 }
 
+/** Max codes per chunk sent to TBO search API */
+const CHUNK_SIZE = 50;
+/** Max parallel chunk requests */
+const MAX_PARALLEL_CHUNKS = 4;
+/** Max total codes to search (top N after prioritization) */
+const MAX_CODES_TO_SEARCH = 200;
+
 /**
  * Get a batch of hotel codes for a city.
- * Supports paging/attempts to rotate through available codes.
+ * Returns a single comma-separated string (for backward compat with direct /hotels route).
  */
-export async function getHotelCodeBatch(cityCode, count = 10000, attempt = 1) {
+export async function getHotelCodeBatch(cityCode, count = MAX_CODES_TO_SEARCH, attempt = 1) {
   const codes = await getCityHotelCodes(cityCode);
   if (!codes || codes.length === 0) return "";
 
-  // Return ALL codes without filtering/slicing if count is large
-  // But still prioritize known codes first just in case
   const knownCodesStr = POSTMAN_KNOWN_CODES.map(String);
   const known = codes.filter(c => knownCodesStr.includes(c));
   const unknown = codes.filter(c => !knownCodesStr.includes(c));
-  
-  // Combine all
-  const allCodes = [...known, ...unknown];
-  return filterDeadCodes(allCodes).join(",");
+  const allCodes = filterDeadCodes([...known, ...unknown]);
+  return allCodes.slice(0, count).join(",");
+}
+
+/**
+ * Get hotel code chunks for parallel searching.
+ * Returns an array of comma-separated strings, each ≤ CHUNK_SIZE codes.
+ */
+export async function getHotelCodeChunks(cityCode) {
+  const codes = await getCityHotelCodes(cityCode);
+  if (!codes || codes.length === 0) return [];
+
+  const knownCodesStr = POSTMAN_KNOWN_CODES.map(String);
+  const known = codes.filter(c => knownCodesStr.includes(c));
+  const unknown = codes.filter(c => !knownCodesStr.includes(c));
+  const allCodes = filterDeadCodes([...known, ...unknown]).slice(0, MAX_CODES_TO_SEARCH);
+
+  // Split into chunks
+  const chunks = [];
+  for (let i = 0; i < allCodes.length; i += CHUNK_SIZE) {
+    chunks.push(allCodes.slice(i, i + CHUNK_SIZE).join(","));
+  }
+  return chunks;
+}
+
+/**
+ * Search hotels using parallel chunked requests.
+ * Splits hotel codes into chunks of CHUNK_SIZE and fires them in parallel
+ * (up to MAX_PARALLEL_CHUNKS at a time), then merges all HotelResult arrays.
+ */
+export async function searchHotelsChunked({
+  cityCode,
+  checkIn,
+  checkOut,
+  adults = 2,
+  children = 0,
+  childrenAges = [],
+  nationality = "IN",
+  rooms = 1,
+}) {
+  const chunks = await getHotelCodeChunks(cityCode);
+  if (chunks.length === 0) {
+    return { Status: { Code: 200, Description: "No hotel codes" }, HotelResult: [] };
+  }
+
+  console.log(`[TBO] Chunked search: ${chunks.length} chunks (${CHUNK_SIZE} codes each) for city ${cityCode}`);
+  const start = Date.now();
+
+  // Fire chunks in parallel batches of MAX_PARALLEL_CHUNKS
+  const allResults = [];
+  for (let i = 0; i < chunks.length; i += MAX_PARALLEL_CHUNKS) {
+    const batch = chunks.slice(i, i + MAX_PARALLEL_CHUNKS);
+    const batchResults = await Promise.allSettled(
+      batch.map(codesStr =>
+        searchHotels({ checkIn, checkOut, hotelCodes: codesStr, adults, children, childrenAges, nationality, rooms })
+      )
+    );
+    for (const r of batchResults) {
+      if (r.status === "fulfilled" && r.value.HotelResult) {
+        allResults.push(...r.value.HotelResult);
+      }
+    }
+    // If we already have enough results, stop early
+    if (allResults.length >= 60) {
+      console.log(`[TBO] Early exit: ${allResults.length} hotels after ${i + batch.length}/${chunks.length} chunks`);
+      break;
+    }
+  }
+
+  const elapsed = Date.now() - start;
+  console.log(`[TBO] Chunked search done: ${allResults.length} hotels in ${elapsed}ms`);
+
+  return { Status: { Code: 200, Description: "Success" }, HotelResult: allResults };
 }

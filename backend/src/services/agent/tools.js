@@ -1,7 +1,7 @@
 // ─── Tool Executors ─────────────────────────────────────────────
 import config from "../../config/index.js";
 import { searchTboFlights } from "../tboAirApi.js";
-import { searchHotels as tboSearchHotels, getHotelCodeBatch } from "../tboApi.js";
+import { searchHotels as tboSearchHotels, getHotelCodeBatch, searchHotelsChunked } from "../tboApi.js";
 import { generateMockHotels } from "../mockHotels.js";
 import { getCityCode } from "../cityResolver.js";
 import {
@@ -36,81 +36,62 @@ export async function executeSearchHotels(args, collected) {
     ];
 
     for (const attempt of dateAttempts) {
-      // Retry up to 1 time per date with different random code batches
-      // (TBO returns 500 when random codes include bad/expired ones)
-      const CODE_RETRIES = 1;
-      for (let codeRetry = 0; codeRetry < CODE_RETRIES; codeRetry++) {
-        try {
-          const hotelCodes = await getHotelCodeBatch(cityCode);
-          console.log(`[Agent] Attempt: dates ${attempt.checkIn}→${attempt.checkOut}, code batch #${codeRetry + 1}`);
-          const tboResult = await tboSearchHotels({
-            cityCode,
-            checkIn: attempt.checkIn,
-            checkOut: attempt.checkOut,
-            hotelCodes,
-            adults: args.adults || 2,
-            children: 0,
-            childrenAges: [],
-            nationality: args.nationality || config.defaults.nationality,
-            rooms: args.rooms || 1,
-          });
+      try {
+        console.log(`[Agent] Chunked search: dates ${attempt.checkIn}→${attempt.checkOut}, city ${cityCode}`);
+        const tboResult = await searchHotelsChunked({
+          cityCode,
+          checkIn: attempt.checkIn,
+          checkOut: attempt.checkOut,
+          adults: args.adults || 2,
+          children: 0,
+          childrenAges: [],
+          nationality: args.nationality || config.defaults.nationality,
+          rooms: args.rooms || 1,
+        });
 
-          // If TBO returned a 500 error, retry with different codes
-          if (tboResult.Status && tboResult.Status.Code === 500) {
-            console.warn(`[Agent] TBO 500 error on batch #${codeRetry + 1}, retrying with different codes...`);
-            continue;
+        let hotelResults =
+          tboResult.HotelResult ||
+          tboResult.HotelSearchResults?.HotelResult ||
+          [];
+
+        console.log(
+          `[Agent] TBO returned ${hotelResults.length} hotels for CityCode: ${cityCode} (dates: ${attempt.checkIn} → ${attempt.checkOut})`
+        );
+
+        if (hotelResults.length > 0) {
+          const returnedCodes = hotelResults.map((h) => String(h.HotelCode));
+          const detailsMap = await fetchHotelDetailsMap(returnedCodes, cityCode);
+
+          hotels = hotelResults.map((h) => transformTboHotel(h, detailsMap, destination));
+          
+          // Filter by budget
+          if (args.budget_max || args.total_budget) {
+              const oneDay = 24 * 60 * 60 * 1000;
+              const date1 = new Date(usedCheckIn);
+              const date2 = new Date(usedCheckOut);
+              const nights = Math.max(1, Math.round(Math.abs((date1 - date2) / oneDay)));
+              
+              let maxNightly = Number.MAX_SAFE_INTEGER;
+              if (args.budget_max) {
+                  maxNightly = Number(args.budget_max);
+              } else if (args.total_budget) {
+                  const hotelBudget = Number(args.total_budget) * 0.6;
+                  maxNightly = hotelBudget / nights;
+              }
+              
+              const before = hotels.length;
+              hotels = hotels.filter(h => h.price_per_night <= maxNightly);
+              console.log(`[Agent] Filtered hotels by budget (Max/Night: ${Math.round(maxNightly)}): ${before} -> ${hotels.length}`);
           }
 
-          let hotelResults =
-            tboResult.HotelResult ||
-            tboResult.HotelSearchResults?.HotelResult ||
-            [];
-
-          console.log(
-            `[Agent] TBO returned ${hotelResults.length} hotels for CityCode: ${cityCode} (dates: ${attempt.checkIn} → ${attempt.checkOut})`
-          );
-
-          if (hotelResults.length > 0) {
-            // Processing ALL results - user requested no slicing
-            const returnedCodes = hotelResults.map((h) => String(h.HotelCode));
-            const detailsMap = await fetchHotelDetailsMap(returnedCodes, cityCode);
-
-            hotels = hotelResults.map((h) => transformTboHotel(h, detailsMap, destination));
-            
-            // Filter by budget
-            if (args.budget_max || args.total_budget) {
-                const oneDay = 24 * 60 * 60 * 1000;
-                const date1 = new Date(usedCheckIn);
-                const date2 = new Date(usedCheckOut);
-                const nights = Math.max(1, Math.round(Math.abs((date1 - date2) / oneDay)));
-                
-                let maxNightly = Number.MAX_SAFE_INTEGER;
-                if (args.budget_max) {
-                    maxNightly = Number(args.budget_max);
-                } else if (args.total_budget) {
-                    // Heuristic: Max 60% of total budget for hotel stay
-                    const hotelBudget = Number(args.total_budget) * 0.6;
-                    maxNightly = hotelBudget / nights;
-                }
-                
-                const before = hotels.length;
-                hotels = hotels.filter(h => h.price_per_night <= maxNightly);
-                console.log(`[Agent] Filtered hotels by budget (Max/Night: ${Math.round(maxNightly)}): ${before} -> ${hotels.length}`);
-            }
-
-            source = "tbo_live";
-            usedCheckIn = attempt.checkIn;
-            usedCheckOut = attempt.checkOut;
-            if (attempt !== dateAttempts[0]) {
-              console.log(`[Agent] Found hotels with shifted dates: ${attempt.checkIn} → ${attempt.checkOut}`);
-            }
-            break; // Found results, stop retrying codes
-          }
-        } catch (err) {
-          console.error(`[Agent] TBO hotel search error (dates: ${attempt.checkIn} → ${attempt.checkOut}, batch #${codeRetry + 1}):`, err.message);
+          source = "tbo_live";
+          usedCheckIn = attempt.checkIn;
+          usedCheckOut = attempt.checkOut;
+          break; // Found results, stop trying dates
         }
+      } catch (err) {
+        console.error(`[Agent] TBO hotel search error (dates: ${attempt.checkIn} → ${attempt.checkOut}):`, err.message);
       }
-      if (hotels.length > 0) break; // Found results, stop trying dates
     }
   }
 
@@ -159,9 +140,10 @@ export async function executeSearchHotels(args, collected) {
 }
 
 export async function executeSearchFlights(args, collected) {
-  // If destination_iata provided (e.g. SXR), use it as destination string which resolveIATA will accept directly.
+  // Prefer IATA codes from LLM, fall back to city names for resolveIATA
   const destination = args.destination_iata || args.destination || "";
   const origin =
+    args.origin_iata ||
     args.origin ||
     collected.origin ||
     config.defaults.origin ||    "Delhi";
@@ -273,7 +255,9 @@ export async function executePlanTrip(args, collected) {
   collected.fetchFlightsAsync = true; // Flag for UI
   collected.flightParams = {
        origin: args.origin || collected.origin,
+       origin_iata: args.origin_iata || null,
        destination: args.destination,
+       destination_iata: args.destination_iata || null,
        departureDate: validateAndFixDate(args.start_date) || undefined,
        returnDate: validateAndFixDate(args.end_date) || undefined,
        adults: args.adults,

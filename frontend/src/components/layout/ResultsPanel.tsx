@@ -1,9 +1,10 @@
 "use client";
 
-import { TripPlan, Flight, CartItem } from "@/lib/types";
+import { TripPlan, Flight, CartItem, SmartBundle } from "@/lib/types";
 import { HotelCard } from "../features/HotelCard";
 import { FlightCard } from "../features/FlightCard";
 import { FlightFilters } from "../features/FlightFilters";
+import { BundleCard } from "../features/BundleCard";
 import {
   X,
   ChevronLeft,
@@ -46,6 +47,8 @@ interface ResultsPanelProps {
   onUpdateCartQty?: (itemId: string, delta: number) => void;
   onClearCart?: () => void;
   onActiveTabChange?: (tab: string) => void;
+  bundles?: SmartBundle[];
+  bundlesLoading?: boolean;
 }
 
 export function ResultsPanel({
@@ -60,6 +63,8 @@ export function ResultsPanel({
   onUpdateCartQty,
   onClearCart,
   onActiveTabChange,
+  bundles = [],
+  bundlesLoading = false,
 }: ResultsPanelProps) {
   const [activeTab, setActiveTabInternal] = useState<"flights" | "hotels" | "cart">("flights");
   const setActiveTab = (tab: "flights" | "hotels" | "cart") => {
@@ -408,6 +413,40 @@ export function ResultsPanel({
                 {/* Itinerary */}
                 {(activeTab === 'cart') && (
                    <div>
+                        {/* ──── Smart Bundles Section ──── */}
+                        {(bundles.length > 0 || bundlesLoading) && (
+                          <div className="mb-6">
+                            <div className="flex items-center gap-2 mb-3">
+                              <Sparkles className="w-4 h-4 text-emerald-500" />
+                              <h3 className="font-semibold text-sm">Smart Bundles</h3>
+                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-medium">
+                                {bundlesLoading ? 'Finding...' : `${bundles.length} matches`}
+                              </Badge>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground mb-3">
+                              AI-matched flight + hotel combos based on proximity, value &amp; your preferences.
+                            </p>
+                            {bundlesLoading ? (
+                              <div className="flex flex-col items-center py-10 text-muted-foreground animate-pulse border rounded-xl border-dashed bg-emerald-50/30">
+                                <Sparkles className="w-8 h-8 text-emerald-200 mb-2" />
+                                <p className="text-sm font-medium text-foreground">Generating smart bundles...</p>
+                                <p className="text-xs">Scoring airport proximity, value &amp; more</p>
+                              </div>
+                            ) : (
+                              <div className="space-y-3">
+                                {bundles.map((bundle, idx) => (
+                                  <BundleCard
+                                    key={`bundle-${idx}`}
+                                    bundle={bundle}
+                                    rank={idx}
+                                    onAddToCart={onAddToCart}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         <div className="flex items-center justify-between mb-4 mt-6">
                             <h3 className="font-semibold flex items-center gap-2">
                               <ClipboardList className="w-4 h-4 text-emerald-600" /> Your Itinerary

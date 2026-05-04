@@ -6,10 +6,11 @@ import { Router } from "express";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import { runAgent } from "../services/agentService.js";
 import { searchTboFlights } from "../services/tboAirApi.js";
-import { searchHotels as tboSearchHotels, getHotelCodeBatch, getCachedHotelDetailsMap } from "../services/tboApi.js";
+import { searchHotels as tboSearchHotels, getHotelCodeBatch, getCachedHotelDetailsMap, searchHotelsChunked } from "../services/tboApi.js";
 import { generateMockHotels } from "../services/mockHotels.js";
 import { getCityCode } from "../services/cityResolver.js";
 import { parseIntent } from "../services/intentParser.js";
+import { generateBundles } from "../services/bundleService.js";
 import {
   transformTboHotel,
   fetchHotelDetailsMap as _fetchDetailsMap,
@@ -60,14 +61,12 @@ router.post("/hotels", asyncHandler(async (req, res) => {
   const { query, budget_max, cityCode, checkIn, checkOut, adults, children, rooms, destination: destName } =
     req.body;
 
-  // If direct TBO params provided, use them
+  // If direct TBO params provided, use chunked parallel search
   if (cityCode && checkIn && checkOut) {
-    const hotelCodes = await getHotelCodeBatch(cityCode);
-    const tboResult = await tboSearchHotels({
+    const tboResult = await searchHotelsChunked({
       cityCode,
       checkIn,
       checkOut,
-      hotelCodes,
       adults: adults || 2,
       children: children || 0,
       childrenAges: [],
@@ -96,12 +95,10 @@ router.post("/hotels", asyncHandler(async (req, res) => {
   const resolvedCode = await getCityCode(destination);
 
   if (resolvedCode) {
-    const hotelCodes = await getHotelCodeBatch(resolvedCode);
-    const tboResult = await tboSearchHotels({
+    const tboResult = await searchHotelsChunked({
       cityCode: resolvedCode,
       checkIn: intent.check_in || getDefaultCheckIn(),
       checkOut: intent.check_out || getDefaultCheckOut(intent.check_in),
-      hotelCodes,
       adults: intent.adults || 2,
       children: intent.children || 0,
       childrenAges: [],
@@ -135,16 +132,17 @@ router.post("/hotels", asyncHandler(async (req, res) => {
  * Uses TBO Air API.
  */
 router.post("/flights", asyncHandler(async (req, res) => {
-  const { query, origin, destination, departureDate, returnDate, adults } = req.body;
+  const { query, origin, origin_iata, destination, destination_iata, departureDate, returnDate, adults } = req.body;
   let flights = [];
   let source = "tbo_air";
 
   // Direct params (from flight search form)
+  // Prefer IATA codes from LLM when available
   if (destination && departureDate) {
     try {
       flights = await searchTboFlights({
-        origin: origin || config.defaults.origin,
-        destination,
+        origin: origin_iata || origin || config.defaults.origin,
+        destination: destination_iata || destination,
         departureDate,
         returnDate: returnDate || null,
         adults: adults || 1,
@@ -177,6 +175,31 @@ router.post("/flights", asyncHandler(async (req, res) => {
   }
 
   res.json({ flights, intent, source });
+}));
+
+/**
+ * POST /api/search/bundles
+ * Generate smart flight+hotel bundles using rule-based scoring + optional vector search.
+ * Expects: { hotels, flights, chatHistory, destinationCode, sessionId }
+ */
+router.post("/bundles", asyncHandler(async (req, res) => {
+  const { hotels, flights, chatHistory, destinationCode, sessionId } = req.body;
+
+  if (!hotels || !flights || hotels.length === 0 || flights.length === 0) {
+    return res.json({ bundles: [], message: "Need both hotels and flights to generate bundles." });
+  }
+
+  console.log(`[Bundles] Request: ${hotels.length} hotels, ${flights.length} flights, dest=${destinationCode}`);
+
+  const bundles = await generateBundles({
+    hotels,
+    flights,
+    chatHistory: chatHistory || [],
+    destinationCode: destinationCode || "",
+    sessionId: sessionId || null,
+  });
+
+  res.json({ bundles, count: bundles.length });
 }));
 
 export default router;

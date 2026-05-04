@@ -45,4 +45,23 @@ export async function searchFlights(params: any) {
   return res.json();
 }
 
+/**
+ * Generate smart flight+hotel bundles using backend scoring.
+ */
+export async function generateSmartBundles(params: {
+  hotels: any[];
+  flights: any[];
+  chatHistory?: Array<{ role: string; content: string }>;
+  destinationCode?: string;
+  sessionId?: string;
+}) {
+  const res = await fetch(`${API_BASE}/api/search/bundles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error("Bundle generation failed");
+  return res.json();
+}
+
 

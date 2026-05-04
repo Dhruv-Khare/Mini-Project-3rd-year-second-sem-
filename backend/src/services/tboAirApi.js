@@ -128,6 +128,7 @@ const CITY_IATA = {
 
 /**
  * Resolve a city name to an IATA code. Case-insensitive.
+ * Uses: exact match → common misspellings → partial match → Levenshtein fuzzy match → null.
  */
 export function resolveIATA(cityName) {
   if (!cityName) return null;
@@ -138,16 +139,51 @@ export function resolveIATA(cityName) {
     return cleaned.toUpperCase();
   }
 
-  // Static cache
+  // Static cache — exact match
   if (CITY_IATA[cleaned]) return CITY_IATA[cleaned];
 
-  // Try partial match
+  // Try partial match (substring)
   for (const [key, code] of Object.entries(CITY_IATA)) {
     if (key.includes(cleaned) || cleaned.includes(key)) return code;
   }
 
-  console.warn(`[TBO Air] Could not resolve IATA for "${cityName}", using DEL as fallback.`);
-  return "DEL"; // Fallback to avoid empty strings
+  // Fuzzy match — Levenshtein distance for typos (e.g. "banglore", "mumabi", "dlehi")
+  let bestMatch = null;
+  let bestDist = Infinity;
+  for (const [key, code] of Object.entries(CITY_IATA)) {
+    const dist = levenshtein(cleaned, key);
+    // Allow up to 2 edits for short names, 3 for longer ones
+    const maxDist = key.length <= 5 ? 2 : 3;
+    if (dist < bestDist && dist <= maxDist) {
+      bestDist = dist;
+      bestMatch = code;
+    }
+  }
+  if (bestMatch) {
+    console.log(`[TBO Air] Fuzzy IATA match: "${cityName}" -> ${bestMatch} (distance: ${bestDist})`);
+    return bestMatch;
+  }
+
+  console.warn(`[TBO Air] Could not resolve IATA for "${cityName}", returning null.`);
+  return null;
+}
+
+/**
+ * Simple Levenshtein distance for short strings.
+ */
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
 }
 
 // ─── Authentication ─────────────────────────────────────────────
@@ -242,7 +278,12 @@ export async function searchTboFlights({
   const destCode = resolveIATA(destination);
 
   if (!originCode || !destCode) {
-    console.warn(`[TBO Air] Missing IATA codes for ${origin} -> ${destination}`);
+    console.warn(`[TBO Air] Missing IATA codes for ${origin} -> ${destination} (resolved: ${originCode} -> ${destCode})`);
+    return [];
+  }
+
+  if (originCode === destCode) {
+    console.warn(`[TBO Air] Origin and destination are the same: ${originCode}. Skipping search.`);
     return [];
   }
 
@@ -301,8 +342,8 @@ export async function searchTboFlights({
   );
   const start = Date.now();
   const controller = new AbortController();
-  // INCREASED TIMEOUT to 60s for air search as it returns 200+ flights
-  const timeout = setTimeout(() => controller.abort(), 60000); 
+  // 30s timeout for air search
+  const timeout = setTimeout(() => controller.abort(), 30000); 
 
   try {
     const res = await fetch(url, {

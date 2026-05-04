@@ -1,0 +1,145 @@
+# SafarAI (Voyehack) Architecture & Implementation
+
+## 1. System Architecture
+
+The following diagram illustrates the high-level system architecture of SafarAI, showing the interactions between the user interface, backend services, AI models, and external APIs.
+
+```mermaid
+graph TD
+    User([User]) -->|Natural Language Input| Frontend[Next.js Frontend\nClient App]
+    Frontend -->|POST /api/search| API_Gateway[Express Router\nBackend Gateway]
+    
+    subgraph "SafarAI Backend (Node.js/Express)"
+        API_Gateway --> AgentService[Agent Service\nOrchestrator]
+        
+        subgraph "Intelligence Layer"
+            AgentService <-->|Prompt Context & Tools| Gemini[Google Gemini\nGenerative AI]
+            AgentService <--> IntentParser[Intent Parser]
+        end
+        
+        subgraph "Business Logic Layer"
+            AgentService --> BundleService[Bundle Service\nFlight+Hotel Matcher]
+            AgentService --> CityResolver[City Resolver\nNLP to IATA/City Codes]
+        end
+        
+        subgraph "Data & Inventory Layer"
+            AgentService --> TBO_API[TBO API Integration]
+            AgentService --> TBO_Air_API[TBO Air API Integration]
+            AgentService --> VectorService[Vector Service\nSemantic Search]
+            AgentService --> MockData[Mock Data Service\nFallback]
+        end
+    end
+    
+    TBO_API <-->|Hotel Inventory| TBO_External[(TBO Holidays API)]
+    TBO_Air_API <-->|Flight Inventory| TBO_External
+    
+    API_Gateway -->|Structured Trip Plan (JSON)| Frontend
+    Frontend -->|Render Data| UI[Interactive Dashboard,\nMaps, Cards]
+```
+
+---
+
+## 2. Sequence Diagram
+
+This sequence diagram details the typical data flow when a user requests a trip plan using natural language.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Frontend as Next.js Frontend
+    participant Backend as Express Backend
+    participant Gemini as Google Gemini AI
+    participant TBO as TBO APIs (Flights/Hotels)
+    
+    User->>Frontend: "Plan a 3-day trip to Bali for 2 adults"
+    Frontend->>Backend: POST /api/search (query)
+    
+    Backend->>Gemini: Send conversation history & query
+    Gemini-->>Backend: Return Structured Intent (JSON)<br/>{ destination: "Bali", pax: 2, days: 3 }
+    
+    Note over Backend: Resolve city name to <br/>Hotel City Code & Airport IATA
+    
+    par Search Flights
+        Backend->>TBO: Search Flights (DPS, Dates, Pax)
+        TBO-->>Backend: Flight Results (JSON)
+    and Search Hotels
+        Backend->>TBO: Search Hotels (Bali Code, Dates, Pax)
+        TBO-->>Backend: Hotel Results (JSON)
+    end
+    
+    Note over Backend: Generate Smart Bundles <br/>(Best matching Flights + Hotels)
+    
+    Backend-->>Frontend: Return aggregated JSON<br/>(Flights, Hotels, Bundles, Intent)
+    
+    Frontend->>Frontend: Update Zustand State
+    Frontend->>User: Render Dashboard (Map, Flight Cards, Hotel Cards)
+```
+
+---
+
+## 3. Project Implementation Structure
+
+The project is structured as a monorepo containing a **Next.js frontend** and a **Node.js/Express backend**.
+
+### 3.1 Directory Structure
+
+```text
+SafarAI/
+├── backend/                  # Node.js/Express Backend Services
+│   ├── src/
+│   │   ├── config/           # App configs, defaults, and API keys
+│   │   ├── middleware/       # Express middlewares (error handling, etc.)
+│   │   ├── routes/           # API endpoints (e.g., search.js)
+│   │   ├── services/         # Core business logic and external integrations
+│   │   │   ├── agentService.js    # Orchestrates Gemini AI agent
+│   │   │   ├── bundleService.js   # Generates flight+hotel bundles
+│   │   │   ├── cityResolver.js    # Maps natural language cities to codes
+│   │   │   ├── intentParser.js    # Parses unstructured query to JSON intent
+│   │   │   ├── mockHotels.js      # Fallback mock data generator
+│   │   │   ├── tboAirApi.js       # TBO Flights API integration
+│   │   │   ├── tboApi.js          # TBO Hotels API integration
+│   │   │   └── vectorService.js   # Semantic search service
+│   │   ├── utils/            # Helper functions (transformers, default dates)
+│   │   └── index.js          # Express app entry point
+│   ├── data/                 # Static data (Cities, Activities)
+│   ├── package.json          # Backend dependencies
+│   └── .env                  # Environment variables (TBO keys, Gemini key)
+│
+├── frontend/                 # Next.js 15 (App Router) Frontend Client
+│   ├── src/
+│   │   ├── app/              # Next.js routing (pages and layouts)
+│   │   │   ├── globals.css   # Global styles and Tailwind configurations
+│   │   │   ├── layout.tsx    # Root layout
+│   │   │   └── page.tsx      # Main application page
+│   │   ├── components/       # Reusable React components
+│   │   │   ├── features/     # Complex domain-specific components
+│   │   │   │   ├── BundleCard.tsx    # Display smart flight+hotel bundles
+│   │   │   │   ├── ChatAssistant.tsx # Conversational AI UI
+│   │   │   │   ├── FlightCard.tsx    # Flight search result card
+│   │   │   │   ├── FlightFilters.tsx # Dynamic filtering UI
+│   │   │   │   ├── HotelCard.tsx     # Hotel search result card
+│   │   │   │   ├── MapView.tsx       # Leaflet interactive map
+│   │   │   │   ├── SafarBot.tsx      # Core bot logic/UI
+│   │   │   │   └── VoiceInput.tsx    # Speech-to-text input component
+│   │   │   ├── layout/       # Structural components (Headers, Sidebars)
+│   │   │   └── ui/           # Base UI components (Shadcn/Tailwind)
+│   │   ├── lib/              # Frontend utilities and state management
+│   ├── public/               # Static assets (images, icons)
+│   └── package.json          # Frontend dependencies
+│
+├── PROJECT_DOCS.md           # Deep dive into project goals & architecture
+├── PROJECT_INFORMATION.md    # Executive summary and setup guides
+└── README.md                 # Entry point documentation
+```
+
+### 3.2 Key Technology Implementation Highlights
+
+#### Frontend (Next.js 15)
+*   **State Management:** Utilizes **Zustand** (implied via standard practices for this stack) or React Context to share complex trip states (flights, hotels, selected bundles) between the `ChatAssistant`, `MapView`, and Result Cards.
+*   **UI Components:** Built using **Tailwind CSS** and **Shadcn UI** for a modern, accessible, and fast interface. Framer Motion is used for micro-animations.
+*   **Mapping:** Integrates **Leaflet (`react-leaflet`)** to dynamically plot hotel coordinates and flight origin/destination lines based on backend results.
+
+#### Backend (Node.js/Express)
+*   **Agentic Search Orchestration (`agentService.js`):** The core "brain" of the app. It takes user prompts, sends them to Gemini 2.0/1.5 Flash using Function Calling, and determines whether to search for flights, hotels, or both.
+*   **TBO Integrations (`tboApi.js`, `tboAirApi.js`):** Modular wrappers around the TBO XML/JSON APIs. Handles chunked parallel searches, caching, and data transformation into normalized structures.
+*   **Smart Bundling (`bundleService.js`):** Implements an algorithm to match compatible flights and hotels (based on dates, locations, and pricing) and presents them as cohesive "Bundles" to the user, mimicking a personalized travel agent's recommendations.
